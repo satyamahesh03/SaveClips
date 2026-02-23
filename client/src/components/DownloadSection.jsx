@@ -66,7 +66,7 @@ export default function DownloadSection({ videoData, url }) {
     };
 
     const handleVideoDownload = (fmt) => {
-        const downloadUrl = `${API_URL}/api/download?url=${encodeURIComponent(url)}&title=${encodeURIComponent(title)}&type=${fmt.type}&quality=${fmt.height}`;
+        const downloadUrl = `${API_URL}/api/download?url=${encodeURIComponent(url)}&title=${encodeURIComponent(title)}&type=${fmt.type}&quality=${fmt.height}&formatId=${encodeURIComponent(fmt.formatId || '')}`;
         triggerDownload(downloadUrl);
     };
 

@@ -244,7 +244,7 @@ function App() {
   };
 
   const handleVideoDownload = (fmt) => {
-    const downloadUrl = `${API_URL}/api/download?url=${encodeURIComponent(session.url)}&title=${encodeURIComponent(session.videoData.title)}&type=${encodeURIComponent(fmt.type)}&quality=${fmt.height}`;
+    const downloadUrl = `${API_URL}/api/download?url=${encodeURIComponent(session.url)}&title=${encodeURIComponent(session.videoData.title)}&type=${encodeURIComponent(fmt.type)}&quality=${fmt.height}&formatId=${encodeURIComponent(fmt.formatId || '')}`;
     triggerDownload(downloadUrl, `${fmt.quality} MP4`);
   };
 
