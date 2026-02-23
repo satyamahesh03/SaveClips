@@ -1,0 +1,169 @@
+@import url('https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@300;400;500;600;700&display=swap');
+
+:root {
+  /* Terminal Colors */
+  --term-bg: #1a1a2e;
+  --term-bg-dark: #0f0f1a;
+  --term-bg-card: #16162a;
+  --term-header: #252545;
+  --term-border: #2a2a4a;
+
+  --term-green: #4ade80;
+  --term-green-dim: #22c55e;
+  --term-green-glow: rgba(74, 222, 128, 0.15);
+  --term-cyan: #22d3ee;
+  --term-yellow: #facc15;
+  --term-red: #f87171;
+  --term-orange: #fb923c;
+  --term-purple: #a78bfa;
+  --term-pink: #f472b6;
+  --term-blue: #60a5fa;
+  --term-white: #e2e8f0;
+  --term-gray: #64748b;
+  --term-dim: #475569;
+
+  /* Traffic Lights */
+  --dot-red: #ff5f57;
+  --dot-yellow: #febc2e;
+  --dot-green: #28c840;
+
+  --radius: 12px;
+  --radius-sm: 8px;
+}
+
+*,
+*::before,
+*::after {
+  margin: 0;
+  padding: 0;
+  box-sizing: border-box;
+}
+
+html {
+  scroll-behavior: smooth;
+}
+
+body {
+  font-family: 'JetBrains Mono', 'Fira Code', 'Courier New', monospace;
+  background: var(--term-bg-dark);
+  color: var(--term-white);
+  min-height: 100vh;
+  -webkit-font-smoothing: antialiased;
+  display: flex;
+  justify-content: center;
+  align-items: flex-start;
+  padding: 30px 16px;
+}
+
+/* Background grid pattern */
+body::before {
+  content: '';
+  position: fixed;
+  inset: 0;
+  background-image:
+    linear-gradient(rgba(74, 222, 128, 0.02) 1px, transparent 1px),
+    linear-gradient(90deg, rgba(74, 222, 128, 0.02) 1px, transparent 1px);
+  background-size: 20px 20px;
+  pointer-events: none;
+  z-index: 0;
+}
+
+#root {
+  position: relative;
+  z-index: 1;
+  width: 100%;
+  max-width: 1100px;
+}
+
+/* Scrollbar */
+::-webkit-scrollbar {
+  width: 6px;
+}
+
+::-webkit-scrollbar-track {
+  background: var(--term-bg-dark);
+}
+
+::-webkit-scrollbar-thumb {
+  background: var(--term-border);
+  border-radius: 99px;
+}
+
+/* Animations */
+@keyframes blink {
+
+  0%,
+  100% {
+    opacity: 1;
+  }
+
+  50% {
+    opacity: 0;
+  }
+}
+
+@keyframes typing {
+  from {
+    width: 0;
+  }
+
+  to {
+    width: 100%;
+  }
+}
+
+@keyframes fadeIn {
+  from {
+    opacity: 0;
+    transform: translateY(6px);
+  }
+
+  to {
+    opacity: 1;
+    transform: translateY(0);
+  }
+}
+
+@keyframes pulse {
+
+  0%,
+  100% {
+    opacity: 0.4;
+  }
+
+  50% {
+    opacity: 1;
+  }
+}
+
+@keyframes spin {
+  0% {
+    transform: rotate(0deg);
+  }
+
+  100% {
+    transform: rotate(360deg);
+  }
+}
+
+@keyframes slideDown {
+  from {
+    opacity: 0;
+    max-height: 0;
+  }
+
+  to {
+    opacity: 1;
+    max-height: 2000px;
+  }
+}
+
+@keyframes scanline {
+  0% {
+    transform: translateY(-100%);
+  }
+
+  100% {
+    transform: translateY(100vh);
+  }
+}
