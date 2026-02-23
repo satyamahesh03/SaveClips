@@ -5,8 +5,10 @@ const express = require('express');
 const cors = require('cors');
 const { spawn } = require('child_process');
 const ffmpegPath = require('ffmpeg-static');
+const ytdl = require('@distube/ytdl-core');
 
 const ytDlpPath = path.join(__dirname, 'node_modules', 'youtube-dl-exec', 'bin', 'yt-dlp');
+const cookiesPath = path.join(__dirname, 'cookies.txt');
 const app = express();
 const PORT = process.env.PORT || 6500;
 
@@ -42,7 +44,7 @@ function isValidYouTubeUrl(url) {
 function extractVideoId(url) {
     const patterns = [
         /youtu\.be\/([a-zA-Z0-9_-]{11})/,
-        /youtube\.com\/watch\?v=([a-zA-Z0-9_-]{11})/,
+        /[?&]v=([a-zA-Z0-9_-]{11})/,
         /youtube\.com\/embed\/([a-zA-Z0-9_-]{11})/,
         /youtube\.com\/v\/([a-zA-Z0-9_-]{11})/,
         /youtube\.com\/shorts\/([a-zA-Z0-9_-]{11})/,
@@ -54,21 +56,7 @@ function extractVideoId(url) {
     return null;
 }
 
-// Lazy-initialized InnerTube instance (youtubei.js)
-let _innertube = null;
-async function getInnertube() {
-    if (!_innertube) {
-        // youtubei.js is ESM-only, so we use dynamic import
-        const { Innertube } = await import('youtubei.js');
-        _innertube = await Innertube.create({
-            lang: 'en',
-            location: 'US',
-        });
-    }
-    return _innertube;
-}
-
-// Get video info using youtubei.js (YouTube's own InnerTube API — no bot detection)
+// ─── GET VIDEO INFO (uses @distube/ytdl-core) ──────────────────────────────────
 app.post('/api/info', async (req, res) => {
     try {
         const { url } = req.body;
@@ -82,71 +70,26 @@ app.post('/api/info', async (req, res) => {
             return res.status(400).json({ error: 'Could not extract video ID from URL' });
         }
 
-        const yt = await getInnertube();
-        const info = await yt.getInfo(videoId);
+        const videoUrl = `https://www.youtube.com/watch?v=${videoId}`;
+        const info = await ytdl.getInfo(videoUrl);
+        const details = info.videoDetails;
 
-        // Debug: log available top-level keys
-        console.log('[DEBUG] info keys:', Object.keys(info).filter(k => !k.startsWith('_')).join(', '));
+        // Extract video formats (with video track)
+        const videoFormats = info.formats
+            .filter(f => f.hasVideo && f.qualityLabel && f.height)
+            .map(f => ({
+                formatId: String(f.itag),
+                quality: f.qualityLabel || `${f.height}p`,
+                height: f.height || 0,
+                container: f.container || 'mp4',
+                codec: f.videoCodec ? f.videoCodec.split('.')[0].toUpperCase() : 'UNKNOWN',
+                size: f.contentLength ? formatBytes(Number(f.contentLength)) : 'Unknown',
+                hasAudio: f.hasAudio || false,
+                type: f.hasAudio ? 'video+audio' : 'video-only',
+                fps: f.fps || 30,
+            }));
 
-        const details = info.basic_info || {};
-        const streamingData = info.streaming_data;
-
-        // Debug: log what we got
-        console.log('[DEBUG] basic_info keys:', Object.keys(details).join(', '));
-        console.log('[DEBUG] title:', details.title);
-        console.log('[DEBUG] streaming_data exists:', !!streamingData);
-        console.log('[DEBUG] formats count:', streamingData?.formats?.length || 0);
-        console.log('[DEBUG] adaptive_formats count:', streamingData?.adaptive_formats?.length || 0);
-
-        // Fallback title from primary_info or video_details
-        const title = details.title
-            || info.primary_info?.title?.text
-            || info.video_details?.title
-            || 'Unknown';
-
-        const duration = details.duration
-            || info.video_details?.length_seconds
-            || 0;
-
-        const author = details.author
-            || details.channel?.name
-            || info.video_details?.author
-            || info.secondary_info?.owner?.author?.name
-            || 'Unknown';
-
-        const viewCount = details.view_count
-            || info.video_details?.view_count
-            || 0;
-
-        // Extract video formats
-        const allFormats = [
-            ...(streamingData?.formats || []),
-            ...(streamingData?.adaptive_formats || []),
-        ];
-
-        const videoFormats = allFormats
-            .filter(f => f.has_video && f.height)
-            .map(f => {
-                let sizeBytes = 0;
-                if (f.content_length) {
-                    sizeBytes = Number(f.content_length);
-                } else if (f.bitrate && duration) {
-                    sizeBytes = Math.round((f.bitrate * duration) / 8);
-                }
-
-                return {
-                    formatId: String(f.itag),
-                    quality: `${f.height}p`,
-                    height: f.height || 0,
-                    container: f.mime_type?.split('/')[1]?.split(';')[0] || 'mp4',
-                    codec: f.mime_type?.match(/codecs="([^"]+)"/)?.[1]?.split(',')[0]?.split('.')[0]?.toUpperCase() || 'UNKNOWN',
-                    size: sizeBytes > 0 ? `~${formatBytes(sizeBytes)}` : 'Unknown',
-                    hasAudio: f.has_audio || false,
-                    type: f.has_audio ? 'video+audio' : 'video-only',
-                    fps: f.fps || 30,
-                };
-            });
-
+        // Sort by height descending and deduplicate
         videoFormats.sort((a, b) => b.height - a.height);
         const seenQualities = new Set();
         const uniqueVideoFormats = [];
@@ -164,31 +107,31 @@ app.post('/api/info', async (req, res) => {
             { quality: '128kbps', bitrate: 128, container: 'MP3', codec: 'MP3', type: 'mp3', label: 'MP3 - 128kbps (Normal)' },
         ];
 
-        // Best thumbnail — try multiple sources
-        const thumbnails = details.thumbnail || [];
-        const bestThumb = (thumbnails.length > 0 ? thumbnails[thumbnails.length - 1]?.url : null)
-            || `https://img.youtube.com/vi/${videoId}/maxresdefault.jpg`;
+        // Thumbnail
+        const thumbs = details.thumbnails || [];
+        const bestThumb = thumbs.length > 0
+            ? thumbs[thumbs.length - 1].url
+            : `https://img.youtube.com/vi/${videoId}/maxresdefault.jpg`;
 
-        console.log(`Fetched: "${title}" — Qualities: ${uniqueVideoFormats.map(f => f.quality).join(', ')}`);
+        console.log(`Fetched: "${details.title}" — Qualities: ${uniqueVideoFormats.map(f => f.quality).join(', ')}`);
 
         res.json({
-            title,
+            title: details.title || 'Unknown',
             thumbnail: bestThumb,
-            duration: formatDuration(duration),
-            durationSeconds: duration,
-            author,
-            views: formatViews(viewCount),
+            duration: formatDuration(Number(details.lengthSeconds) || 0),
+            durationSeconds: Number(details.lengthSeconds) || 0,
+            author: details.author?.name || details.ownerChannelName || 'Unknown',
+            views: formatViews(Number(details.viewCount) || 0),
             videoFormats: uniqueVideoFormats,
             audioFormats,
         });
     } catch (error) {
         console.error('Error fetching video info:', error.message || error);
-        // Reset innertube instance on error so it gets re-created next time
-        _innertube = null;
         res.status(500).json({ error: 'Failed to fetch video info. Please try again.' });
     }
 });
 
+// ─── DOWNLOAD (uses yt-dlp — most reliable for actual downloading) ─────────────
 app.get('/api/download', async (req, res) => {
     try {
         const { url, title, type, quality, bitrate, formatId } = req.query;
@@ -201,21 +144,24 @@ app.get('/api/download', async (req, res) => {
         const ext = type === 'mp3' ? 'mp3' : 'mp4';
         const filename = `${sanitizedTitle}.${ext}`;
 
-        res.header('Content-Disposition', `attachment; filename="${filename}"`);
-        res.header('Content-Type', type === 'mp3' ? 'audio/mpeg' : 'video/mp4');
-        res.flushHeaders(); // Tell browser download is starting immediately
-
         const crypto = require('crypto');
         const tmpId = crypto.randomBytes(8).toString('hex');
         const tmpFile = path.join(os.tmpdir(), `saveclip-${tmpId}.${ext}`);
 
+        // Build yt-dlp arguments
         const ytDlpArgs = [
             ytDlpPath,
             url,
             '--ffmpeg-location', ffmpegPath,
             '-o', tmpFile,
-            '--quiet', '--no-warnings'
+            '--no-warnings',
         ];
+
+        // Add cookies if the file exists (needed for Render / cloud servers)
+        if (fs.existsSync(cookiesPath)) {
+            ytDlpArgs.push('--cookies', cookiesPath);
+            console.log('[DL] Using cookies.txt for authentication');
+        }
 
         if (type === 'mp3') {
             ytDlpArgs.push(
@@ -225,61 +171,58 @@ app.get('/api/download', async (req, res) => {
                 '--audio-quality', `${bitrate ? Math.round(bitrate) : 192}K`
             );
         } else {
-            /**
-             * Prefer using the exact formatId selected on the frontend so that:
-             * - The downloaded file matches the chosen quality/codec.
-             * - The filesize is close to what was displayed.
-             * Fallback to the previous "bestvideo<=height + bestaudio" selector
-             * if formatId is not provided (for backwards compatibility).
-             */
             if (formatId) {
                 if (type === 'video+audio') {
-                    // Format already has audio included
-                    ytDlpArgs.push(
-                        '-f', `${formatId}`,
-                        '--merge-output-format', 'mp4'
-                    );
+                    ytDlpArgs.push('-f', `${formatId}`, '--merge-output-format', 'mp4');
                 } else {
-                    // Video-only format: combine with bestaudio
-                    ytDlpArgs.push(
-                        '-f', `${formatId}+bestaudio`,
-                        '--merge-output-format', 'mp4'
-                    );
+                    ytDlpArgs.push('-f', `${formatId}+bestaudio`, '--merge-output-format', 'mp4');
                 }
             } else {
                 const formatStr = quality
                     ? `bestvideo[height<=${parseInt(quality)}]+bestaudio/best[height<=${parseInt(quality)}]`
                     : 'bestvideo+bestaudio/best';
-
-                ytDlpArgs.push(
-                    '-f', formatStr,
-                    '--merge-output-format', 'mp4'
-                );
+                ytDlpArgs.push('-f', formatStr, '--merge-output-format', 'mp4');
             }
         }
 
-        console.log("Spawning python3 with args:", ytDlpArgs.join(" "));
+        console.log(`[DL] ${filename} — yt-dlp starting...`);
         const ytdlpProcess = spawn('python3', ytDlpArgs, { windowsHide: true });
 
-        // We don't pipe stdout because it's not a stream anymore. Data is going to tmpFile.
+        let stderrLog = '';
         ytdlpProcess.stderr.on('data', (data) => {
-            console.log("yt-dlp stderr:", data.toString());
+            stderrLog += data.toString();
+        });
+
+        ytdlpProcess.stdout.on('data', (data) => {
+            // yt-dlp progress output
         });
 
         ytdlpProcess.on('close', (code) => {
-            console.log("yt-dlp exited with code:", code);
+            console.log(`[DL] yt-dlp exited with code: ${code}`);
+
             if (code !== 0 || !fs.existsSync(tmpFile)) {
+                console.error('[DL] yt-dlp error:', stderrLog.substring(0, 500));
                 if (fs.existsSync(tmpFile)) fs.unlinkSync(tmpFile);
-                if (!res.headersSent) res.status(500).json({ error: 'Download failed during decoding pipeline' });
-                else res.end();
+                if (!res.headersSent) {
+                    res.status(500).json({
+                        error: stderrLog.includes('Sign in')
+                            ? 'YouTube requires authentication. Please add cookies.txt to the server.'
+                            : 'Download failed. Please try again.'
+                    });
+                }
                 return;
             }
 
-            // Stream the completed file back to the client as fast as the connection allows.
+            // Set headers and stream the file
+            const stat = fs.statSync(tmpFile);
+            res.header('Content-Disposition', `attachment; filename="${filename}"`);
+            res.header('Content-Type', type === 'mp3' ? 'audio/mpeg' : 'video/mp4');
+            res.header('Content-Length', stat.size);
+
             const fileStream = fs.createReadStream(tmpFile);
 
             fileStream.on('error', (err) => {
-                console.error('File stream error:', err.message);
+                console.error('[DL] File stream error:', err.message);
                 fs.unlink(tmpFile, () => { });
                 if (!res.headersSent) res.status(500).json({ error: 'Download stream failed' });
                 else res.end();
@@ -293,10 +236,9 @@ app.get('/api/download', async (req, res) => {
         });
 
         ytdlpProcess.on('error', (err) => {
-            console.error('yt-dlp spawn error (python3 missing?):', err.message);
+            console.error('[DL] yt-dlp spawn error:', err.message);
             if (fs.existsSync(tmpFile)) fs.unlinkSync(tmpFile);
             if (!res.headersSent) res.status(500).json({ error: 'Failed to start download process' });
-            else res.end();
         });
 
     } catch (error) {
@@ -309,7 +251,7 @@ app.get('/api/download', async (req, res) => {
     }
 });
 
-// Helper functions
+// ─── HELPER FUNCTIONS ──────────────────────────────────────────────────────────
 function formatBytes(bytes) {
     if (!bytes || isNaN(bytes)) return 'Unknown';
     const sizes = ['Bytes', 'KB', 'MB', 'GB'];
@@ -336,4 +278,10 @@ function formatViews(views) {
 
 app.listen(PORT, () => {
     console.log(`SaveClip Server running on http://localhost:${PORT}`);
+    if (fs.existsSync(cookiesPath)) {
+        console.log('✓ cookies.txt found — YouTube authentication enabled');
+    } else {
+        console.log('⚠ No cookies.txt found — downloads may fail on cloud servers');
+        console.log('  To fix: export YouTube cookies from your browser and save as cookies.txt');
+    }
 });
