@@ -83,10 +83,40 @@ app.post('/api/info', async (req, res) => {
         }
 
         const yt = await getInnertube();
-        const info = await yt.getBasicInfo(videoId);
+        const info = await yt.getInfo(videoId);
 
-        const details = info.basic_info;
+        // Debug: log available top-level keys
+        console.log('[DEBUG] info keys:', Object.keys(info).filter(k => !k.startsWith('_')).join(', '));
+
+        const details = info.basic_info || {};
         const streamingData = info.streaming_data;
+
+        // Debug: log what we got
+        console.log('[DEBUG] basic_info keys:', Object.keys(details).join(', '));
+        console.log('[DEBUG] title:', details.title);
+        console.log('[DEBUG] streaming_data exists:', !!streamingData);
+        console.log('[DEBUG] formats count:', streamingData?.formats?.length || 0);
+        console.log('[DEBUG] adaptive_formats count:', streamingData?.adaptive_formats?.length || 0);
+
+        // Fallback title from primary_info or video_details
+        const title = details.title
+            || info.primary_info?.title?.text
+            || info.video_details?.title
+            || 'Unknown';
+
+        const duration = details.duration
+            || info.video_details?.length_seconds
+            || 0;
+
+        const author = details.author
+            || details.channel?.name
+            || info.video_details?.author
+            || info.secondary_info?.owner?.author?.name
+            || 'Unknown';
+
+        const viewCount = details.view_count
+            || info.video_details?.view_count
+            || 0;
 
         // Extract video formats
         const allFormats = [
@@ -97,12 +127,11 @@ app.post('/api/info', async (req, res) => {
         const videoFormats = allFormats
             .filter(f => f.has_video && f.height)
             .map(f => {
-                // content_length is often undefined; estimate from bitrate
                 let sizeBytes = 0;
                 if (f.content_length) {
                     sizeBytes = Number(f.content_length);
-                } else if (f.bitrate && details.duration) {
-                    sizeBytes = Math.round((f.bitrate * details.duration) / 8);
+                } else if (f.bitrate && duration) {
+                    sizeBytes = Math.round((f.bitrate * duration) / 8);
                 }
 
                 return {
@@ -135,19 +164,20 @@ app.post('/api/info', async (req, res) => {
             { quality: '128kbps', bitrate: 128, container: 'MP3', codec: 'MP3', type: 'mp3', label: 'MP3 - 128kbps (Normal)' },
         ];
 
-        // Best thumbnail
-        const bestThumb = details.thumbnail?.[details.thumbnail.length - 1]?.url
+        // Best thumbnail — try multiple sources
+        const thumbnails = details.thumbnail || [];
+        const bestThumb = (thumbnails.length > 0 ? thumbnails[thumbnails.length - 1]?.url : null)
             || `https://img.youtube.com/vi/${videoId}/maxresdefault.jpg`;
 
-        console.log(`Fetched: "${details.title}" — Qualities: ${uniqueVideoFormats.map(f => f.quality).join(', ')}`);
+        console.log(`Fetched: "${title}" — Qualities: ${uniqueVideoFormats.map(f => f.quality).join(', ')}`);
 
         res.json({
-            title: details.title || 'Unknown',
+            title,
             thumbnail: bestThumb,
-            duration: formatDuration(details.duration || 0),
-            durationSeconds: details.duration || 0,
-            author: details.author || details.channel?.name || 'Unknown',
-            views: formatViews(details.view_count || 0),
+            duration: formatDuration(duration),
+            durationSeconds: duration,
+            author,
+            views: formatViews(viewCount),
             videoFormats: uniqueVideoFormats,
             audioFormats,
         });
