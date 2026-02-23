@@ -3,7 +3,7 @@ const fs = require('fs');
 const os = require('os');
 const express = require('express');
 const cors = require('cors');
-const { spawn, execFile } = require('child_process');
+const { spawn } = require('child_process');
 const ffmpegPath = require('ffmpeg-static');
 
 const ytDlpPath = path.join(__dirname, 'node_modules', 'youtube-dl-exec', 'bin', 'yt-dlp');
@@ -38,43 +38,37 @@ function isValidYouTubeUrl(url) {
     return regex.test(url);
 }
 
-/**
- * Helper: run yt-dlp --dump-json to get video metadata.
- * Returns a Promise that resolves with the parsed JSON object.
- */
-function getVideoInfoViYtDlp(videoUrl) {
-    return new Promise((resolve, reject) => {
-        const args = [
-            ytDlpPath,
-            videoUrl,
-            '--dump-json',
-            '--no-warnings',
-            '--no-playlist',
-        ];
-
-        const proc = spawn('python3', args, { windowsHide: true });
-        let stdout = '';
-        let stderr = '';
-
-        proc.stdout.on('data', (d) => (stdout += d.toString()));
-        proc.stderr.on('data', (d) => (stderr += d.toString()));
-
-        proc.on('close', (code) => {
-            if (code !== 0) {
-                return reject(new Error(`yt-dlp exited with code ${code}: ${stderr}`));
-            }
-            try {
-                resolve(JSON.parse(stdout));
-            } catch (e) {
-                reject(new Error('Failed to parse yt-dlp JSON output'));
-            }
-        });
-
-        proc.on('error', (err) => reject(err));
-    });
+// Extract video ID from a YouTube URL
+function extractVideoId(url) {
+    const patterns = [
+        /youtu\.be\/([a-zA-Z0-9_-]{11})/,
+        /youtube\.com\/watch\?v=([a-zA-Z0-9_-]{11})/,
+        /youtube\.com\/embed\/([a-zA-Z0-9_-]{11})/,
+        /youtube\.com\/v\/([a-zA-Z0-9_-]{11})/,
+        /youtube\.com\/shorts\/([a-zA-Z0-9_-]{11})/,
+    ];
+    for (const p of patterns) {
+        const m = url.match(p);
+        if (m) return m[1];
+    }
+    return null;
 }
 
-// Get video info using yt-dlp (replaces play-dl to avoid 429 errors on cloud hosts)
+// Lazy-initialized InnerTube instance (youtubei.js)
+let _innertube = null;
+async function getInnertube() {
+    if (!_innertube) {
+        // youtubei.js is ESM-only, so we use dynamic import
+        const { Innertube } = await import('youtubei.js');
+        _innertube = await Innertube.create({
+            lang: 'en',
+            location: 'US',
+        });
+    }
+    return _innertube;
+}
+
+// Get video info using youtubei.js (YouTube's own InnerTube API — no bot detection)
 app.post('/api/info', async (req, res) => {
     try {
         const { url } = req.body;
@@ -83,26 +77,43 @@ app.post('/api/info', async (req, res) => {
             return res.status(400).json({ error: 'Invalid YouTube URL' });
         }
 
-        const info = await getVideoInfoViYtDlp(url);
+        const videoId = extractVideoId(url);
+        if (!videoId) {
+            return res.status(400).json({ error: 'Could not extract video ID from URL' });
+        }
 
-        // Extract video formats from yt-dlp output
-        const allFormats = info.formats || [];
+        const yt = await getInnertube();
+        const info = await yt.getBasicInfo(videoId);
+
+        const details = info.basic_info;
+        const streamingData = info.streaming_data;
+
+        // Extract video formats
+        const allFormats = [
+            ...(streamingData?.formats || []),
+            ...(streamingData?.adaptive_formats || []),
+        ];
 
         const videoFormats = allFormats
-            .filter(f => f.vcodec && f.vcodec !== 'none' && f.height)
+            .filter(f => f.has_video && f.height)
             .map(f => {
-                const sizeBytes = f.filesize || f.filesize_approx || 0;
-                const qualityLabel = f.format_note || `${f.height}p`;
+                // content_length is often undefined; estimate from bitrate
+                let sizeBytes = 0;
+                if (f.content_length) {
+                    sizeBytes = Number(f.content_length);
+                } else if (f.bitrate && details.duration) {
+                    sizeBytes = Math.round((f.bitrate * details.duration) / 8);
+                }
 
                 return {
-                    formatId: String(f.format_id),
+                    formatId: String(f.itag),
                     quality: `${f.height}p`,
                     height: f.height || 0,
-                    container: f.ext || 'mp4',
-                    codec: f.vcodec ? f.vcodec.split('.')[0].toUpperCase() : 'UNKNOWN',
-                    size: sizeBytes ? formatBytes(sizeBytes) : 'Unknown',
-                    hasAudio: !!(f.acodec && f.acodec !== 'none'),
-                    type: (f.acodec && f.acodec !== 'none') ? 'video+audio' : 'video-only',
+                    container: f.mime_type?.split('/')[1]?.split(';')[0] || 'mp4',
+                    codec: f.mime_type?.match(/codecs="([^"]+)"/)?.[1]?.split(',')[0]?.split('.')[0]?.toUpperCase() || 'UNKNOWN',
+                    size: sizeBytes > 0 ? `~${formatBytes(sizeBytes)}` : 'Unknown',
+                    hasAudio: f.has_audio || false,
+                    type: f.has_audio ? 'video+audio' : 'video-only',
                     fps: f.fps || 30,
                 };
             });
@@ -124,26 +135,26 @@ app.post('/api/info', async (req, res) => {
             { quality: '128kbps', bitrate: 128, container: 'MP3', codec: 'MP3', type: 'mp3', label: 'MP3 - 128kbps (Normal)' },
         ];
 
-        // Get best thumbnail
-        const thumbnails = info.thumbnails || [];
-        const bestThumb = thumbnails.length > 0
-            ? thumbnails[thumbnails.length - 1].url
-            : `https://img.youtube.com/vi/${info.id}/maxresdefault.jpg`;
+        // Best thumbnail
+        const bestThumb = details.thumbnail?.[details.thumbnail.length - 1]?.url
+            || `https://img.youtube.com/vi/${videoId}/maxresdefault.jpg`;
 
-        console.log(`Fetched: "${info.title}" — Qualities: ${uniqueVideoFormats.map(f => f.quality).join(', ')}`);
+        console.log(`Fetched: "${details.title}" — Qualities: ${uniqueVideoFormats.map(f => f.quality).join(', ')}`);
 
         res.json({
-            title: info.title || 'Unknown',
+            title: details.title || 'Unknown',
             thumbnail: bestThumb,
-            duration: formatDuration(info.duration || 0),
-            durationSeconds: info.duration || 0,
-            author: info.uploader || info.channel || 'Unknown',
-            views: formatViews(info.view_count || 0),
+            duration: formatDuration(details.duration || 0),
+            durationSeconds: details.duration || 0,
+            author: details.author || details.channel?.name || 'Unknown',
+            views: formatViews(details.view_count || 0),
             videoFormats: uniqueVideoFormats,
             audioFormats,
         });
     } catch (error) {
         console.error('Error fetching video info:', error.message || error);
+        // Reset innertube instance on error so it gets re-created next time
+        _innertube = null;
         res.status(500).json({ error: 'Failed to fetch video info. Please try again.' });
     }
 });
