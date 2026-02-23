@@ -3,15 +3,28 @@ const fs = require('fs');
 const os = require('os');
 const express = require('express');
 const cors = require('cors');
-const { spawn } = require('child_process');
+const { spawn, execFile } = require('child_process');
 const ffmpegPath = require('ffmpeg-static');
-const play = require('play-dl');
 
 const ytDlpPath = path.join(__dirname, 'node_modules', 'youtube-dl-exec', 'bin', 'yt-dlp');
 const app = express();
 const PORT = process.env.PORT || 6500;
 
-app.use(cors({ origin: process.env.FRONTEND_URL || '*' }));
+const allowedOrigins = [
+    'https://save-clips-ten.vercel.app',
+    'https://saveclips.satyapage.in',
+    'http://localhost:5173',
+];
+
+app.use(cors({
+    origin: (origin, callback) => {
+        if (!origin || allowedOrigins.includes(origin)) {
+            callback(null, true);
+        } else {
+            callback(null, true);
+        }
+    },
+}));
 app.use(express.json());
 
 // Health Check route
@@ -25,7 +38,43 @@ function isValidYouTubeUrl(url) {
     return regex.test(url);
 }
 
-// Get video info using Play-dl API
+/**
+ * Helper: run yt-dlp --dump-json to get video metadata.
+ * Returns a Promise that resolves with the parsed JSON object.
+ */
+function getVideoInfoViYtDlp(videoUrl) {
+    return new Promise((resolve, reject) => {
+        const args = [
+            ytDlpPath,
+            videoUrl,
+            '--dump-json',
+            '--no-warnings',
+            '--no-playlist',
+        ];
+
+        const proc = spawn('python3', args, { windowsHide: true });
+        let stdout = '';
+        let stderr = '';
+
+        proc.stdout.on('data', (d) => (stdout += d.toString()));
+        proc.stderr.on('data', (d) => (stderr += d.toString()));
+
+        proc.on('close', (code) => {
+            if (code !== 0) {
+                return reject(new Error(`yt-dlp exited with code ${code}: ${stderr}`));
+            }
+            try {
+                resolve(JSON.parse(stdout));
+            } catch (e) {
+                reject(new Error('Failed to parse yt-dlp JSON output'));
+            }
+        });
+
+        proc.on('error', (err) => reject(err));
+    });
+}
+
+// Get video info using yt-dlp (replaces play-dl to avoid 429 errors on cloud hosts)
 app.post('/api/info', async (req, res) => {
     try {
         const { url } = req.body;
@@ -34,24 +83,26 @@ app.post('/api/info', async (req, res) => {
             return res.status(400).json({ error: 'Invalid YouTube URL' });
         }
 
-        const info = await play.video_info(url);
-        const videoData = info.video_details;
+        const info = await getVideoInfoViYtDlp(url);
 
-        const videoFormats = info.format
-            .filter(f => f.qualityLabel && f.height)
+        // Extract video formats from yt-dlp output
+        const allFormats = info.formats || [];
+
+        const videoFormats = allFormats
+            .filter(f => f.vcodec && f.vcodec !== 'none' && f.height)
             .map(f => {
-                const sizeBytes = f.contentLength || 0;
-                let qualityLabel = f.qualityLabel || `${f.height}p`;
+                const sizeBytes = f.filesize || f.filesize_approx || 0;
+                const qualityLabel = f.format_note || `${f.height}p`;
 
                 return {
-                    formatId: f.itag,
-                    quality: qualityLabel,
+                    formatId: String(f.format_id),
+                    quality: `${f.height}p`,
                     height: f.height || 0,
-                    container: f.container || 'mp4',
-                    codec: f.videoCodec ? f.videoCodec.split('.')[0].toUpperCase() : 'UNKNOWN',
+                    container: f.ext || 'mp4',
+                    codec: f.vcodec ? f.vcodec.split('.')[0].toUpperCase() : 'UNKNOWN',
                     size: sizeBytes ? formatBytes(sizeBytes) : 'Unknown',
-                    hasAudio: !!f.audioCodec,
-                    type: f.audioCodec ? 'video+audio' : 'video-only',
+                    hasAudio: !!(f.acodec && f.acodec !== 'none'),
+                    type: (f.acodec && f.acodec !== 'none') ? 'video+audio' : 'video-only',
                     fps: f.fps || 30,
                 };
             });
@@ -73,19 +124,21 @@ app.post('/api/info', async (req, res) => {
             { quality: '128kbps', bitrate: 128, container: 'MP3', codec: 'MP3', type: 'mp3', label: 'MP3 - 128kbps (Normal)' },
         ];
 
-        const bestThumb = videoData.thumbnails.length > 0
-            ? videoData.thumbnails[videoData.thumbnails.length - 1].url
-            : '';
+        // Get best thumbnail
+        const thumbnails = info.thumbnails || [];
+        const bestThumb = thumbnails.length > 0
+            ? thumbnails[thumbnails.length - 1].url
+            : `https://img.youtube.com/vi/${info.id}/maxresdefault.jpg`;
 
-        console.log(`Fetched: "${videoData.title}" — Qualities: ${uniqueVideoFormats.map(f => f.quality).join(', ')}`);
+        console.log(`Fetched: "${info.title}" — Qualities: ${uniqueVideoFormats.map(f => f.quality).join(', ')}`);
 
         res.json({
-            title: videoData.title || 'Unknown',
+            title: info.title || 'Unknown',
             thumbnail: bestThumb,
-            duration: formatDuration(videoData.durationInSec || 0),
-            durationSeconds: videoData.durationInSec || 0,
-            author: videoData.channel ? videoData.channel.name : 'Unknown',
-            views: formatViews(videoData.views || 0),
+            duration: formatDuration(info.duration || 0),
+            durationSeconds: info.duration || 0,
+            author: info.uploader || info.channel || 'Unknown',
+            views: formatViews(info.view_count || 0),
             videoFormats: uniqueVideoFormats,
             audioFormats,
         });
