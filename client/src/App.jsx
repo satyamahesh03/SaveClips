@@ -2,7 +2,9 @@ import { useState, useEffect, useRef, useCallback } from 'react';
 import axios from 'axios';
 import './App.css';
 
-const API_URL = import.meta.env.VITE_API_URL || 'http://localhost:6500';
+// const API_URL = import.meta.env.VITE_API_URL || 'http://localhost:6500';
+const API_URL = import.meta.env.VITE_API_URL || 'https://saveclips.onrender.com';
+
 
 const ASCII_LOGO = `
  ███████╗ █████╗ ██╗   ██╗███████╗ ██████╗██╗     ██╗██████╗ ███████╗

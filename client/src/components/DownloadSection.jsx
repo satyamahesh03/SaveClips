@@ -7,7 +7,9 @@ import {
 import { BsFileEarmarkMusic, BsFiletypeMp4 } from 'react-icons/bs';
 import '../styles/DownloadSection.css';
 
-const API_URL = 'http://localhost:6500';
+// const API_URL = 'http://localhost:6500';
+const API_URL = 'https://saveclips.onrender.com';
+
 
 export default function DownloadSection({ videoData, url }) {
     const [activeTab, setActiveTab] = useState('video');
