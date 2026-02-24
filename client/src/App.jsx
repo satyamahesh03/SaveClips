@@ -3,8 +3,8 @@ import axios from 'axios';
 import './App.css';
 
 // const API_URL = import.meta.env.VITE_API_URL || 'http://localhost:6500';
-// const API_URL = import.meta.env.VITE_API_URL || 'https://saveclips.onrender.com';
-const API_URL = import.meta.env.VITE_API_URL || 'https://saveclipss.netlify.app';
+const API_URL = import.meta.env.VITE_API_URL || 'https://saveclips.onrender.com';
+// const API_URL = import.meta.env.VITE_API_URL || 'https://saveclipss.netlify.app';
 
 const ASCII_LOGO = `
  ███████╗ █████╗ ██╗   ██╗███████╗ ██████╗██╗     ██╗██████╗ ███████╗
