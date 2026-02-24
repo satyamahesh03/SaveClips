@@ -8,6 +8,10 @@ const ffmpegPath = require('ffmpeg-static');
 
 const ytDlpPath = path.join(__dirname, 'node_modules', 'youtube-dl-exec', 'bin', 'yt-dlp');
 const cookiesPath = path.join(__dirname, 'cookies.txt');
+
+// Cookie strategy: prefer cookies.txt, then try browser cookies (local dev)
+const hasCookiesFile = () => fs.existsSync(cookiesPath);
+const BROWSER_COOKIES = process.env.COOKIES_BROWSER || 'chrome'; // chrome, firefox, safari, edge
 const app = express();
 const PORT = process.env.PORT || 6500;
 
@@ -56,15 +60,22 @@ function extractVideoId(url) {
 }
 
 // ─── Helper: run yt-dlp --dump-json ────────────────────────────────────────────
+function addCookieArgs(args) {
+    if (hasCookiesFile()) {
+        args.push('--cookies', cookiesPath);
+    } else {
+        // Use browser cookies for local development
+        args.push('--cookies-from-browser', BROWSER_COOKIES);
+    }
+}
+
 function ytDlpGetInfo(videoUrl) {
     return new Promise((resolve, reject) => {
         const args = [
             ytDlpPath, videoUrl,
             '--dump-json', '--no-download', '--no-warnings', '--no-playlist',
         ];
-        if (fs.existsSync(cookiesPath)) {
-            args.push('--cookies', cookiesPath);
-        }
+        addCookieArgs(args);
 
         const proc = spawn('python3', args, { windowsHide: true });
         let stdout = '';
@@ -218,9 +229,7 @@ app.get('/api/download', async (req, res) => {
             '--no-warnings',
         ];
 
-        if (fs.existsSync(cookiesPath)) {
-            ytDlpArgs.push('--cookies', cookiesPath);
-        }
+        addCookieArgs(ytDlpArgs);
 
         if (type === 'mp3') {
             ytDlpArgs.push(
@@ -319,9 +328,10 @@ function formatViews(views) {
 
 app.listen(PORT, () => {
     console.log(`SaveClip Server running on http://localhost:${PORT}`);
-    if (fs.existsSync(cookiesPath)) {
+    if (hasCookiesFile()) {
         console.log('✓ cookies.txt found — YouTube authentication enabled');
     } else {
-        console.log('⚠ No cookies.txt — downloads may need cookies on cloud servers');
+        console.log(`✓ No cookies.txt — using browser cookies from: ${BROWSER_COOKIES}`);
+        console.log('  (Set COOKIES_BROWSER env var to change: chrome, firefox, safari, edge)');
     }
 });
