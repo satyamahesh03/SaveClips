@@ -73,10 +73,11 @@ function ytDlpGetInfo(videoUrl) {
     return new Promise((resolve, reject) => {
         const args = [
             ytDlpPath, videoUrl,
-            '--dump-json', '--no-download', '--no-warnings', '--no-playlist',
+            '--dump-json', '--no-download', '--no-playlist',
         ];
         addCookieArgs(args);
 
+        console.log('[yt-dlp info] Running:', 'python3', args.slice(1).join(' '));
         const proc = spawn('python3', args, { windowsHide: true });
         let stdout = '';
         let stderr = '';
@@ -85,9 +86,17 @@ function ytDlpGetInfo(videoUrl) {
         proc.stderr.on('data', (d) => (stderr += d.toString()));
 
         proc.on('close', (code) => {
-            if (code !== 0) return reject(new Error(stderr.trim()));
-            try { resolve(JSON.parse(stdout)); }
-            catch { reject(new Error('Failed to parse yt-dlp output')); }
+            if (stderr) console.warn('[yt-dlp info] stderr:', stderr.substring(0, 300));
+            // Try to parse stdout even if exit code is non-zero
+            // (yt-dlp sometimes warns on stderr but still outputs valid JSON)
+            if (stdout.trim()) {
+                try {
+                    const parsed = JSON.parse(stdout);
+                    return resolve(parsed);
+                } catch { /* fall through */ }
+            }
+            if (code !== 0) return reject(new Error(stderr.trim() || 'yt-dlp exited with code ' + code));
+            reject(new Error('Failed to parse yt-dlp output'));
         });
         proc.on('error', reject);
     });
@@ -171,12 +180,12 @@ app.post('/api/info', async (req, res) => {
 
             // Standard quality tiers (yt-dlp will pick the right one during download)
             videoFormats = [
-                { formatId: '', quality: '2160p', height: 2160, container: 'mp4', codec: 'VP9', size: 'Unknown', hasAudio: false, type: 'video-only', fps: 30 },
-                { formatId: '', quality: '1440p', height: 1440, container: 'mp4', codec: 'VP9', size: 'Unknown', hasAudio: false, type: 'video-only', fps: 30 },
-                { formatId: '', quality: '1080p', height: 1080, container: 'mp4', codec: 'AVC1', size: 'Unknown', hasAudio: false, type: 'video-only', fps: 30 },
-                { formatId: '', quality: '720p', height: 720, container: 'mp4', codec: 'AVC1', size: 'Unknown', hasAudio: false, type: 'video-only', fps: 30 },
-                { formatId: '', quality: '480p', height: 480, container: 'mp4', codec: 'AVC1', size: 'Unknown', hasAudio: false, type: 'video-only', fps: 30 },
-                { formatId: '', quality: '360p', height: 360, container: 'mp4', codec: 'AVC1', size: 'Unknown', hasAudio: true, type: 'video+audio', fps: 30 },
+                { formatId: '', quality: '2160p', height: 2160, container: 'mp4', codec: 'VP9', size: 'Unknown', hasAudio: true, type: 'video+audio', fps: 30 },
+                { formatId: '', quality: '1440p', height: 1440, container: 'mp4', codec: 'VP9', size: 'Unknown', hasAudio: true, type: 'video+audio', fps: 30 },
+                { formatId: '', quality: '1080p', height: 1080, container: 'mp4', codec: 'H.264', size: 'Unknown', hasAudio: true, type: 'video+audio', fps: 30 },
+                { formatId: '', quality: '720p', height: 720, container: 'mp4', codec: 'H.264', size: 'Unknown', hasAudio: true, type: 'video+audio', fps: 30 },
+                { formatId: '', quality: '480p', height: 480, container: 'mp4', codec: 'H.264', size: 'Unknown', hasAudio: true, type: 'video+audio', fps: 30 },
+                { formatId: '', quality: '360p', height: 360, container: 'mp4', codec: 'H.264', size: 'Unknown', hasAudio: true, type: 'video+audio', fps: 30 },
             ];
 
             console.log(`[oEmbed] Fetched: "${title}" — using standard quality tiers`);
@@ -243,14 +252,23 @@ app.get('/api/download', async (req, res) => {
                 if (type === 'video+audio') {
                     ytDlpArgs.push('-f', `${formatId}`, '--merge-output-format', 'mp4');
                 } else {
-                    ytDlpArgs.push('-f', `${formatId}+bestaudio`, '--merge-output-format', 'mp4');
+                    ytDlpArgs.push('-f', `${formatId}+bestaudio/best`, '--merge-output-format', 'mp4');
                 }
             } else {
                 const h = quality ? parseInt(quality) : 1080;
-                ytDlpArgs.push(
-                    '-f', `bestvideo[height<=${h}]+bestaudio/best[height<=${h}]`,
-                    '--merge-output-format', 'mp4'
-                );
+                // Robust format selection with multiple fallbacks:
+                // 1. Best video at exact height + best audio
+                // 2. Best video at or below height + best audio  
+                // 3. Best combined format at or below height
+                // 4. Just get the best available
+                const formatStr = [
+                    `bestvideo[height=${h}]+bestaudio`,
+                    `bestvideo[height<=${h}]+bestaudio`,
+                    `best[height<=${h}]`,
+                    `bestvideo+bestaudio`,
+                    `best`
+                ].join('/');
+                ytDlpArgs.push('-f', formatStr, '--merge-output-format', 'mp4');
             }
         }
 
